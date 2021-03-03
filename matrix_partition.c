@@ -1,6 +1,8 @@
 /* 
 Matthew Dupont and Louis Finney 
 COSC 6060
+compile using:  mpicc buggy.c
+run using: mpirun -np 3 ./a.out
 */ 
 #include<mpi.h>
 #include<stdio.h>
