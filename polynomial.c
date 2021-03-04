@@ -1,128 +1,156 @@
-#include<stdio.h>
-#include<stdlib.h>
-#include<mpi.h>
+/*
+  COSC 6060
+  Matthew Dupont and Louis Finney
+  Assignment 2 - MPI work distribution
+*/
 
-#define MAX 50000
-#define COEFFICIENT 1
+#include <stdio.h>
+#include <stdlib.h>
 
+#include <mpi.h>
 
-double power(double x, int degree)
-{     
-      if(degree == 0)  return 1;
-      
-      if(degree == 1)  return x;
+#include "polynomial.h"
 
-      return x * power(x, degree - 1);
-}
-
-double sequential(int coeffArr[], double x)
+double sequential(int coeffArr[], int numPolynomials, double variable)
 {
-   int maxDegree = MAX - 1;
-   int i;
-   double  answer = 0;
-   
-   for( i = 0; i < maxDegree;  i++)
-   {
-      
-      double powerX = power(x, i);
+  int i;
+  double  answer = 0;
+  
+  printf("Running Sequentially...\n");
 
-      //printf("%f ", powerX);
-      answer = answer + coeffArr[i] * powerX;
-   }
-   return answer;
-}
-
-double chunk(int coeffArr[], double x, int rank, int numProcs)
-{
-   
-   // SEND SIDE 
-
-   int startIndex = (rank * MAX)/numProcs; //divide up array into halves, thirds, fourths, etc. 
-   int endIndex = ((rank + 1) * MAX)/numProcs;
- 
-   //set endIndex to be the last element for the highest rank process 
-   if(rank == (numProcs - 1))
-        endIndex = MAX;
-
-   double localSum = 0;
-   for(int i = startIndex; i < endIndex; i++)
-   {
-      localSum = localSum + power(coeffArr[i], x);
-   }
-   //DEBUG printf("local sum for rank %d is %f \n", rank,localSum);
-   
-   // RECEIVE SIDE 
-   int source = 0; 
-   MPI_Status status;
-   double final = localSum; //so we don't have to send it if rank = 0
-   if(rank == 0){
-      int source; 
-      double sum;
-      final = localSum;
-      for (source = 1; source < numProcs; source++)
-      {
-         MPI_Recv(&sum, 1, MPI_DOUBLE, source, MPI_ANY_TAG, MPI_COMM_WORLD, &status);
-         final = final + sum;
-      }
-      
-   }
-   else{
-      int destination = 0;
-      MPI_Send(&localSum, 1, MPI_DOUBLE, destination, 1, MPI_COMM_WORLD);
-   }
-   return final; 
-}
-
-double roundRobin(int coeffArr[], double x)
-{
-
-   return 0;
-}
-
-void initialize(int coeffArr[])
-{
-   int maxDegree = MAX - 1;
-   int i;
-   for( i = 0; i < maxDegree; i++)
-   {
-      coeffArr[i] = COEFFICIENT;
-   }
-}
-
-// Driver Code
-int main(int argc, char **argv)
-{
+  for( i = 0; i < numPolynomials;  i++)
+  {
     
-    int *coeffArr = (int *)malloc(sizeof(int) * MAX);
-    
-    initialize(coeffArr);
-    double x = 0.99;
-    
-    MPI_Init (&argc, &argv);
-    int rank;
-    int numProcs;
-    MPI_Comm_rank(MPI_COMM_WORLD, &rank);  // rank is process id
-    MPI_Comm_size(MPI_COMM_WORLD, &numProcs); // number of processes in total, from command line 
-    
+    double powerX = power(variable, i);
 
+    //printf("%f ", powerX);
+    answer = answer + coeffArr[i] * powerX;
+  }
+  return answer;
+}
+
+double roundRobin(int coeffArr[], int numPolynomials, int rank, int numProcs, double variable) {
+  double localTotal = 0.0;
+  int i;
+
+  if (rank == 0) printf("Running with Round Robin...\n");
+
+  for (i = rank; i < numPolynomials; i += numProcs) {
+    //DEBUG printf("LocalTotal:%f\tCoef:%i\tDegree:%i\tVariable:%f\n", localTotal, coeffArr[i], i, VARIABLE);
+    localTotal += evaluateTerm(coeffArr[i], i, variable);
+    //DEBUG printf("Thread %i Evaluated Term %i, new local total %f\n", rank, i, localTotal);
+  }
+
+  //DEBUG printf("Thread %i\tCompleted - Total %f\n", rank, localTotal);
+
+  return localTotal;
+}
+
+double chunk(int coeffArr[], int numPolynomials, int rank, int numProcs, double variable)
+{
+  int startIndex = (rank * numPolynomials)/numProcs; //divide up array into halves, thirds, fourths, etc. 
+  int endIndex = ((rank + 1) * numPolynomials)/numProcs;
+  int i;
+
+  if (rank == 0) printf("Running with Chunk...\n");
+
+  //set endIndex to be the last element for the highest rank process 
+  if(rank == (numProcs - 1))
+      endIndex = numPolynomials;
+
+  double localSum = 0;
+  for(i = startIndex; i < endIndex; i++)
+  {
+    localSum += evaluateTerm(coeffArr[i], i, variable);
+  }
+  //DEBUG printf("local sum for rank %d is %f \n", rank,localSum);
+  
+  return localSum;
+}
+
+double runSequential(int rank, int numPolynomials) {
+  if(rank == 0) {
+    //Each process generates the full set of coefficients.
+    //DEBUG printf("Initializing polynomials\n");
+    int *coeffArr = (int *)malloc(sizeof(int) * numPolynomials);
+    initialize(coeffArr, numPolynomials);
+    
     /* Start timer */
     double elapsed_time = - MPI_Wtime();
-    
-    //double seq_value = sequential(coeffArr, x);
-    double chunk_value = chunk(coeffArr, x, rank, numProcs);
+
+    double localTotal = sequential(coeffArr, numPolynomials, VARIABLE);
+
+    if (rank == 0) {
+      printf("\n\nGlobal Total: %f\n", localTotal);
+    }
+
     /* End timer */
     elapsed_time = elapsed_time + MPI_Wtime();
-   
-   if(rank == 0){
-      //printf(" sequential value %f wall clock time %8.6f \n", seq_value, elapsed_time);
-      printf(" chunk value %f wall clock time %8.6f \n", chunk_value, elapsed_time);
-   }
-    
-    fflush(stdout);
-    
+    printf(" sequential value %f wall clock time %8.6f \n", localTotal, elapsed_time);  
+
     free(coeffArr);
+
+  }
+}
+
+double runDistributed(int rank, int numProcs, int numPolynomials, double(*multiThreadStrategy)(int*, int, int, int, double)) 
+{
+  //Each process generates the full set of coefficients.
+  //DEBUG printf("Initializing polynomials\n");
+  int *coeffArr = (int *)malloc(sizeof(int) * numPolynomials);
+  initialize(coeffArr, numPolynomials);
+  
+  /* Start timer */
+  double elapsed_time = - MPI_Wtime();
     
-    MPI_Finalize();
-    
-	return 0;
+  //Processes calculate work as local totals using round robin.
+  double localTotal = multiThreadStrategy(coeffArr, numPolynomials, rank, numProcs, VARIABLE);
+
+  //Aggregate results with reduce
+  double localResult = 0.0;
+  MPI_Reduce(&localTotal, &localResult, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD); 
+
+  //result = aggregateMessagePassing(localTotal, rank, numProcs);
+
+  /* End timer */
+  elapsed_time = elapsed_time + MPI_Wtime();
+  
+  double maxElapsedTime;
+  MPI_Reduce(&elapsed_time, &maxElapsedTime, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+  if (rank == 0) 
+    printf(" sequential value %f wall clock time %8.6f \n", localResult, maxElapsedTime);  
+
+  free(coeffArr);
+
+}
+
+int main(int argc, char** argv) {
+  int rank;
+  int numProcs;
+  
+  MPI_Init(&argc, &argv);
+  MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+  MPI_Comm_size(MPI_COMM_WORLD, &numProcs);
+
+  int numPolynomials = 50000;
+  if (argc >= 2) {
+    numPolynomials = atoi(argv[1]);
+  }
+
+  if (argc >= 3){
+    if (!strcmp(argv[2], "-r")) {
+      if (rank == 0) printf("Evaluating %i polynomials with %i threads using %s.\n", numPolynomials, numProcs, "Round Robin");
+      runDistributed(rank, numProcs, numPolynomials, roundRobin);
+    }
+    else if (!strcmp(argv[2], "-c")) {
+      if (rank == 0) printf("Evaluating %i polynomials with %i threads using %s.\n", numPolynomials, numProcs, "Chunking");
+      runDistributed(rank, numProcs, numPolynomials, chunk);
+    }
+    else {
+      if (rank == 0) printf("Evaluating %i polynomials with %i threads using %s.\n", numPolynomials, numProcs, "Sequential");
+      runSequential(rank, numPolynomials);
+    }
+  }
+
+  MPI_Finalize();
 }
