@@ -108,13 +108,14 @@ int main(int argc, char **argv)
     /* Start timer */
     double elapsed_time = - MPI_Wtime();
     
-    //double value = sequential(coeffArr, x);
-    double value = chunk(coeffArr, x, rank, numProcs);
+    //double seq_value = sequential(coeffArr, x);
+    double chunk_value = chunk(coeffArr, x, rank, numProcs);
     /* End timer */
     elapsed_time = elapsed_time + MPI_Wtime();
    
    if(rank == 0){
-      printf(" sequential value %f wall clock time %8.6f \n", value, elapsed_time);
+      //printf(" sequential value %f wall clock time %8.6f \n", seq_value, elapsed_time);
+      printf(" chunk value %f wall clock time %8.6f \n", chunk_value, elapsed_time);
    }
     
     fflush(stdout);
