@@ -12,48 +12,48 @@
 
 #include "polynomial.h"
 
-double sequential(int coeffArr[], int numPolynomials, double variable)
+enum executionMode { ex_undefined, ex_sequential, ex_round_robin, ex_chunk };
+enum verbosity { v_undefined=-99, v_verbose=1, v_descriptive=0, v_terse=-1 };
+
+double sequential(int coeffArr[], int numPolynomials, double variable, int verbosity)
 {
   int i;
-  double  answer = 0;
+  double answer = 0;
   
-  printf("Running Sequentially...\n");
+  if (verbosity >= v_descriptive) printf("Running Sequentially...\n");
 
   for( i = 0; i < numPolynomials;  i++)
   {
-    
-    double powerX = power(variable, i);
-
-    //printf("%f ", powerX);
-    answer = answer + coeffArr[i] * powerX;
+    answer += evaluateTerm(coeffArr[i], i, variable);
   }
   return answer;
 }
 
-double roundRobin(int coeffArr[], int numPolynomials, int rank, int numProcs, double variable) {
+//Evaluates the provided coefficient array in a round-robin fashin, i.e. 1,4,7,10; 2,5,8; 3,6,9;
+double roundRobin(int coeffArr[], int numPolynomials, int rank, int numProcs, double variable, int verbosity) {
   double localTotal = 0.0;
   int i;
 
-  if (rank == 0) printf("Using Round Robin strategy...\n");
+  if (rank == 0 && verbosity >= v_descriptive) printf("Using Round Robin strategy...\n");
 
   for (i = rank; i < numPolynomials; i += numProcs) {
-    //DEBUG printf("LocalTotal:%f\tCoef:%i\tDegree:%i\tVariable:%f\n", localTotal, coeffArr[i], i, VARIABLE);
     localTotal += evaluateTerm(coeffArr[i], i, variable);
-    //DEBUG printf("Thread %i Evaluated Term %i, new local total %f\n", rank, i, localTotal);
   }
 
-  //DEBUG printf("Thread %i\tCompleted - Total %f\n", rank, localTotal);
+  if (verbosity >= v_verbose) printf("Thread %i\tCompleted - Total %f\n", rank, localTotal);
 
   return localTotal;
 }
 
-double chunk(int coeffArr[], int numPolynomials, int rank, int numProcs, double variable)
+
+//Chunks the provided coefficient array in contiguous pieces, i.e. 1,2,3,4; 5,6,7; 8,9,10;
+double chunk(int coeffArr[], int numPolynomials, int rank, int numProcs, double variable, int verbosity)
 {
   int startIndex = (rank * numPolynomials)/numProcs; //divide up array into halves, thirds, fourths, etc. 
   int endIndex = ((rank + 1) * numPolynomials)/numProcs;
   int i;
 
-  if (rank == 0) printf("Using Chunk strategy...\n");
+  if (rank == 0 && verbosity >= v_descriptive) printf("Using Chunk strategy...\n");
 
   //set endIndex to be the last element for the highest rank process 
   if(rank == (numProcs - 1))
@@ -64,12 +64,14 @@ double chunk(int coeffArr[], int numPolynomials, int rank, int numProcs, double 
   {
     localSum += evaluateTerm(coeffArr[i], i, variable);
   }
-  //DEBUG printf("local sum for rank %d is %f \n", rank,localSum);
+  if (rank == 0 && verbosity >= v_verbose) printf("local sum for rank %d is %f \n", rank,localSum);
   
   return localSum;
 }
 
-double runSequential(int rank, int numPolynomials, double variable) {
+//Generates a set of coefficients for a polynomial then evaluates the polynomial sequentially.
+//Ignores all spawned processes besides that of rank 0.
+double runSequential(int rank, int numPolynomials, double variable, int verbosity) {
   if(rank == 0) {
     //Each process generates the full set of coefficients.
     //DEBUG printf("Initializing polynomials\n");
@@ -79,18 +81,30 @@ double runSequential(int rank, int numPolynomials, double variable) {
     /* Start timer */
     double elapsed_time = - MPI_Wtime();
 
-    double localTotal = sequential(coeffArr, numPolynomials, variable);
+    double localTotal = sequential(coeffArr, numPolynomials, variable, verbosity);
 
     /* End timer */
     elapsed_time = elapsed_time + MPI_Wtime();
-    printf(" sequential value %f wall clock time %8.6f \n", localTotal, elapsed_time);  
+    if (rank == 0) {
+      switch(verbosity) {
+        case v_terse: {
+          printf("%i,%i,%f,%f,%f\n", 1, numPolynomials, variable, localTotal, elapsed_time);
+          break;
+        }
+        default: {
+          printf("Final Total: %f\tWall clock time %8.6\t\n", localTotal, elapsed_time);
+          break;
+        }
+      }
+  }  
 
     free(coeffArr);
-
+    return localTotal;
   }
 }
 
-double runDistributed(int rank, int numProcs, int numPolynomials, double variable, double(*multiThreadStrategy)(int*, int, int, int, double)) 
+//Generates a set of coefficients for a polynomial then evaluates the polynomial using a passed multiThread Strategy
+double runDistributed(int rank, int numProcs, int numPolynomials, double variable, double(*multiThreadStrategy)(int*, int, int, int, double, int), int verbosity) 
 {
   //Each process generates the full set of coefficients.
   //DEBUG printf("Initializing polynomials\n");
@@ -101,30 +115,46 @@ double runDistributed(int rank, int numProcs, int numPolynomials, double variabl
   double elapsed_time = - MPI_Wtime();
     
   //Processes calculate work as local totals using round robin.
-  double localTotal = multiThreadStrategy(coeffArr, numPolynomials, rank, numProcs, variable);
+  double localTotal = multiThreadStrategy(coeffArr, numPolynomials, rank, numProcs, variable, verbosity);
+
+  /* End timer */
+  elapsed_time = elapsed_time + MPI_Wtime();
 
   //Aggregate results with reduce
   double localResult = 0.0;
   MPI_Reduce(&localTotal, &localResult, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD); 
-
-  //result = aggregateMessagePassing(localTotal, rank, numProcs);
-
-  /* End timer */
-  elapsed_time = elapsed_time + MPI_Wtime();
   
   double maxElapsedTime;
+  double avgElapsedTime;
   MPI_Reduce(&elapsed_time, &maxElapsedTime, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
-  if (rank == 0) 
-    printf(" sequential value %f wall clock time %8.6f \n", localResult, maxElapsedTime);  
+  MPI_Reduce(&elapsed_time, &avgElapsedTime, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+  avgElapsedTime = avgElapsedTime/numProcs;
+  if (rank == 0) {
+    switch(verbosity){
+      case v_terse: {
+        printf("%i,%i,%f,%f,%f\n", numProcs, numPolynomials, variable, localResult, elapsed_time);
+        break;
+      }
+      case v_verbose: {
+        printf("Final Total: %f\tWall clock time %8.6f\tAverage Time: %f\n", localResult, maxElapsedTime, avgElapsedTime);  
+        break;
+      }
+      case v_descriptive: {} //Fall through to default.
+      default: {
+        printf("Final Total: %f\tWall clock time %8.6\t\n", localResult, maxElapsedTime);
+        break;
+      }
+    }
+  }
 
   free(coeffArr);
-
+  return localTotal;
 }
 
 void showUsage(char* arg0) {
   printf("Calculates the value of a polynomial with -p terms (default 50000),\n");
   printf("with coefficients of 1 and variable of -v (default .99). Exponents \n");
-  printf("correspond to coefficeint array indices.\n\n");
+  printf("correspond to coefficient array indices.\n\n");
   printf("Usage: %s [OPTION]\n", arg0);
   printf("  -h, --help\n");
   printf("    Displays information about how to use this function.\n");
@@ -137,7 +167,27 @@ void showUsage(char* arg0) {
   printf("    and \"sequential\". Default sequential.\n");
 }
 
+int matchExecution(char* argument, int rank, int* error) {
+  int execution;
+  if(!strcmp(argument, "round_robin")){
+    execution = ex_round_robin;
+  }
+  else if(!strcmp(argument, "chunk")){
+    execution = ex_chunk;
+  }
+  else if(!strcmp(argument, "sequential")){
+    execution = ex_sequential;
+  }
+  else{
+    if (rank == 0) printf("Unknown strategy: %s\n", argument);
+    *error = 1;
+  }
+  return execution;
+}
 
+// Calculates the value of a polynomial with -p terms (default 50000),
+// with coefficients of 1 and variable of -v (default .99). Exponents
+// correspond to coefficeint array indices.
 int main(int argc, char** argv) {
   int rank;
   int numProcs;
@@ -147,9 +197,11 @@ int main(int argc, char** argv) {
   MPI_Comm_size(MPI_COMM_WORLD, &numProcs);
 
   int numPolynomials = 50000;
-  double variable = 0.99;
-  int execution = 0; //0 = runSequential, 1 = runDistributed
+  double variable = .99;
+  int execution = ex_undefined;
+  int verbosity = v_undefined;
   void* strategy = roundRobin;
+
 
   static struct option longOpts[] = 
     {
@@ -157,86 +209,121 @@ int main(int argc, char** argv) {
       // but MPI should be multi-process and thus this shouldn't be a concern.
       // See https://www.gnu.org/software/libc/manual/html_node/Getopt-Long-Options.html
 
-      //long option,  argument status,    flag, short option
-      { "help",	      no_argument,	      0,	  'h' },
-      { "polySize",	  required_argument,	0,	  'p' },
-      { "variable",	  required_argument,  0,	  'v' },
-      { "strategy",	  required_argument,	0,	  's' }
+      //long option,    argument status,    flag, short option
+      { "help",	        no_argument,	      0,    'h' },
+      { "poly_size",	  required_argument,	0,    'p' },
+      { "variable",	    required_argument,  0,    'x' },
+      { "strategy",	    required_argument,	0,    'S' },
+      { "round_robin",  no_argument,	      0,    'r' },
+      { "chunk",	      no_argument,        0,    'c' },
+      { "sequential",	  no_argument,        0,    's' },
+      { "verbose",	    no_argument,        0,    'v' },
+      { "descriptive",  no_argument,        0,    'd' },
+      { "terse",	      no_argument,        0,    't' }
     };
   int c;
   int optionIndex = 0;
-  while (execution >= 0 && (c = getopt_long(argc, argv, "hp:v:s:", longOpts, &optionIndex)) > -1){
+  int error = 0;
+  while (error == 0 && (c = getopt_long(argc, argv, "hp:x:S:rcsvdt", longOpts, &optionIndex)) > -1){
+    //if (rank == 0) printf("read parameter %i, value %s\n", c, optarg);
     switch(c){
       case 'h':
-        execution = -1;
+        error = 1;
         break;
+      
+      //Parameters
       case 'p':
         numPolynomials = atoi(optarg);
         break;
-      case 'v':
+      case 'x':
         variable = atof(optarg);
         break;
+
+      //RunModes
+      case 'S':
+        if(execution == ex_undefined) { execution = matchExecution(optarg, rank, &error); }
+        else { 
+          if (rank == 0) printf("Error: Multiple execution modes set\n");
+          error = 1;
+        }
+        break;
+      case 'r':
+        if(execution == ex_undefined) { execution = ex_round_robin; }
+        else { 
+          if (rank == 0) printf("Error: Multiple execution modes set\n");
+          error = 1;
+        }
+        break;
+      case 'c':
+        if(execution == ex_undefined) { execution = ex_chunk; }
+        else {
+          if (rank == 0) printf("Error: Multiple execution modes set\n");
+          error = 1;
+        }
+        break;
       case 's':
-        if(!strcmp(optarg, "roundRobin")){
-          execution = 1;
-          strategy = roundRobin;
-          break;
+        if(execution == ex_undefined) { execution = ex_sequential; }
+        else {
+          if (rank == 0) printf("Error: Multiple execution modes set\n");
+          error = 1;
         }
-        else if(!strcmp(optarg, "chunk")){
-          execution = 1;
-          strategy = chunk;
-          break;
+        break;
+
+      //Messaging
+      case 'v':
+        if(verbosity == v_undefined) { verbosity = v_verbose; }
+        else {
+          if (rank == 0) printf("Error: Multiple verbosity modes set\n");
+          error = 1;
         }
-        else if(!strcmp(optarg, "sequential")){
-          execution = 0;
-          break;
+        break;
+      case 'd':
+        if(verbosity == v_undefined) { verbosity = v_descriptive; }
+        else {
+          if (rank == 0) printf("Error: Multiple verbosity modes set\n");
+          error = 1;
         }
-        else{
-          if (rank == 0) printf("Unknown strategy: %s\n", optarg);
-          execution = -1;
-          break;
+        break;
+      case 't':
+        if(verbosity == v_undefined) { verbosity = v_terse; }
+        else {
+          if (rank == 0) printf("Error: Multiple verbosity modes set\n");
+          error = 1;
         }
+        break;
       default:
-        execution = -1;
+        error = 1;
         break;
     }
   }
 
-  // if (argc >= 2) {
-  //   numPolynomials = atoi(argv[1]);
-  // }
+  if (error != 0) {
+    if (rank == 0) showUsage(argv[0]);
+    MPI_Finalize();
+    return 1;
+  }
+  if (execution == ex_undefined) execution = ex_sequential;
+  if (verbosity == v_undefined) verbosity = v_descriptive;
 
-  // if (argc >= 3){
-  //   if (!strcmp(argv[2], "-r")) {
-  //     if (rank == 0) printf("Evaluating %i polynomials with %i threads using %s.\n", numPolynomials, numProcs, "Round Robin");
-  //     runDistributed(rank, numProcs, numPolynomials, roundRobin);
-  //   }
-  //   else if (!strcmp(argv[2], "-c")) {
-  //     if (rank == 0) printf("Evaluating %i polynomials with %i threads using %s.\n", numPolynomials, numProcs, "Chunking");
-  //     runDistributed(rank, numProcs, numPolynomials, chunk);
-  //   }
-  //   else {
-  //     if (rank == 0) printf("Evaluating %i polynomials with %i threads using %s.\n", numPolynomials, numProcs, "Sequential");
-  //     runSequential(rank, numPolynomials);
-  //   }
-  // }
-  char* functionName = "polynomial.exe";
+
   switch (execution) {
-    case 0:
-    if (rank == 0) printf("Evaluating %i polynomials with exponent %f sequentially.\n", numPolynomials, variable);
-      runSequential(rank, numPolynomials, variable);
+    case ex_sequential:
+    if (rank == 0 && verbosity >= v_descriptive) printf("Evaluating %i polynomials with exponent %f sequentially.\n", numPolynomials, variable);
+      runSequential(rank, numPolynomials, variable, verbosity);
       break;
-    case 1:
-      if (rank == 0) printf("Evaluating %i polynomials with exponent %f using %i processes.\n", numPolynomials, variable, numProcs);
-      runDistributed(rank, numProcs, numPolynomials, variable, strategy);
+    case ex_round_robin:
+      if (rank == 0 && verbosity >= v_descriptive) printf("Evaluating %i polynomials with exponent %f using %i processes.\n", numPolynomials, variable, numProcs);
+      runDistributed(rank, numProcs, numPolynomials, variable, roundRobin, verbosity);
       break;
-    case -1:
-      if(argc > 0) functionName = argv[0];
-      if (rank == 0) showUsage(functionName);
+    case ex_chunk:
+      if (rank == 0 && verbosity >= v_descriptive) printf("Evaluating %i polynomials with exponent %f using %i processes.\n", numPolynomials, variable, numProcs);
+      runDistributed(rank, numProcs, numPolynomials, variable, chunk, verbosity);
       break;
     default:
+      if (rank == 0) showUsage(argv[0]);
       break;
   }
 
   MPI_Finalize();
+  return 0;
 }
