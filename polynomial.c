@@ -137,7 +137,6 @@ int main(int argc, char** argv) {
     numPolynomials = atoi(argv[1]);
   }
 
-  void* executionFunction = roundRobin;
   if (argc >= 3){
     if (!strcmp(argv[2], "-r")) {
       if (rank == 0) printf("Evaluating %i polynomials with %i threads using %s.\n", numPolynomials, numProcs, "Round Robin");
