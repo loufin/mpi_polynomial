@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#include <getopt.h>
 #include <mpi.h>
 
 #include "polynomial.h"
@@ -33,7 +34,7 @@ double roundRobin(int coeffArr[], int numPolynomials, int rank, int numProcs, do
   double localTotal = 0.0;
   int i;
 
-  if (rank == 0) printf("Running with Round Robin...\n");
+  if (rank == 0) printf("Using Round Robin strategy...\n");
 
   for (i = rank; i < numPolynomials; i += numProcs) {
     //DEBUG printf("LocalTotal:%f\tCoef:%i\tDegree:%i\tVariable:%f\n", localTotal, coeffArr[i], i, VARIABLE);
@@ -52,7 +53,7 @@ double chunk(int coeffArr[], int numPolynomials, int rank, int numProcs, double 
   int endIndex = ((rank + 1) * numPolynomials)/numProcs;
   int i;
 
-  if (rank == 0) printf("Running with Chunk...\n");
+  if (rank == 0) printf("Using Chunk strategy...\n");
 
   //set endIndex to be the last element for the highest rank process 
   if(rank == (numProcs - 1))
@@ -68,7 +69,7 @@ double chunk(int coeffArr[], int numPolynomials, int rank, int numProcs, double 
   return localSum;
 }
 
-double runSequential(int rank, int numPolynomials) {
+double runSequential(int rank, int numPolynomials, double variable) {
   if(rank == 0) {
     //Each process generates the full set of coefficients.
     //DEBUG printf("Initializing polynomials\n");
@@ -78,11 +79,7 @@ double runSequential(int rank, int numPolynomials) {
     /* Start timer */
     double elapsed_time = - MPI_Wtime();
 
-    double localTotal = sequential(coeffArr, numPolynomials, VARIABLE);
-
-    if (rank == 0) {
-      printf("\n\nGlobal Total: %f\n", localTotal);
-    }
+    double localTotal = sequential(coeffArr, numPolynomials, variable);
 
     /* End timer */
     elapsed_time = elapsed_time + MPI_Wtime();
@@ -93,7 +90,7 @@ double runSequential(int rank, int numPolynomials) {
   }
 }
 
-double runDistributed(int rank, int numProcs, int numPolynomials, double(*multiThreadStrategy)(int*, int, int, int, double)) 
+double runDistributed(int rank, int numProcs, int numPolynomials, double variable, double(*multiThreadStrategy)(int*, int, int, int, double)) 
 {
   //Each process generates the full set of coefficients.
   //DEBUG printf("Initializing polynomials\n");
@@ -104,7 +101,7 @@ double runDistributed(int rank, int numProcs, int numPolynomials, double(*multiT
   double elapsed_time = - MPI_Wtime();
     
   //Processes calculate work as local totals using round robin.
-  double localTotal = multiThreadStrategy(coeffArr, numPolynomials, rank, numProcs, VARIABLE);
+  double localTotal = multiThreadStrategy(coeffArr, numPolynomials, rank, numProcs, variable);
 
   //Aggregate results with reduce
   double localResult = 0.0;
@@ -124,6 +121,23 @@ double runDistributed(int rank, int numProcs, int numPolynomials, double(*multiT
 
 }
 
+void showUsage(char* arg0) {
+  printf("Calculates the value of a polynomial with -p terms (default 50000),\n");
+  printf("with coefficients of 1 and variable of -v (default .99). Exponents \n");
+  printf("correspond to coefficeint array indices.\n\n");
+  printf("Usage: %s [OPTION]\n", arg0);
+  printf("  -h, --help\n");
+  printf("    Displays information about how to use this function.\n");
+  printf("  -v, --variable\n");
+  printf("    The variable to be multiplied in the polynomial. Default .99.\n");
+  printf("  -p, --polySize\n");
+  printf("    The length of the polynomial in terms. Default 50000.\n");
+  printf("  -s, --strategy\n");
+  printf("    The strategy to use. Options are \"roundRobin\", \"chunk\",\n");
+  printf("    and \"sequential\". Default sequential.\n");
+}
+
+
 int main(int argc, char** argv) {
   int rank;
   int numProcs;
@@ -133,23 +147,95 @@ int main(int argc, char** argv) {
   MPI_Comm_size(MPI_COMM_WORLD, &numProcs);
 
   int numPolynomials = 50000;
-  if (argc >= 2) {
-    numPolynomials = atoi(argv[1]);
+  double variable = 0.99;
+  int execution = 0; //0 = runSequential, 1 = runDistributed
+  void* strategy = roundRobin;
+
+  static struct option longOpts[] = 
+    {
+      // This does involve setting values in getOpt, which is thread unsafe, 
+      // but MPI should be multi-process and thus this shouldn't be a concern.
+      // See https://www.gnu.org/software/libc/manual/html_node/Getopt-Long-Options.html
+
+      //long option,  argument status,    flag, short option
+      { "help",	      no_argument,	      0,	  'h' },
+      { "polySize",	  required_argument,	0,	  'p' },
+      { "variable",	  required_argument,  0,	  'v' },
+      { "strategy",	  required_argument,	0,	  's' }
+    };
+  int c;
+  int optionIndex = 0;
+  while (execution >= 0 && (c = getopt_long(argc, argv, "hp:v:s:", longOpts, &optionIndex)) > -1){
+    switch(c){
+      case 'h':
+        execution = -1;
+        break;
+      case 'p':
+        numPolynomials = atoi(optarg);
+        break;
+      case 'v':
+        variable = atof(optarg);
+        break;
+      case 's':
+        if(!strcmp(optarg, "roundRobin")){
+          execution = 1;
+          strategy = roundRobin;
+          break;
+        }
+        else if(!strcmp(optarg, "chunk")){
+          execution = 1;
+          strategy = chunk;
+          break;
+        }
+        else if(!strcmp(optarg, "sequential")){
+          execution = 0;
+          break;
+        }
+        else{
+          if (rank == 0) printf("Unknown strategy: %s\n", optarg);
+          execution = -1;
+          break;
+        }
+      default:
+        execution = -1;
+        break;
+    }
   }
 
-  if (argc >= 3){
-    if (!strcmp(argv[2], "-r")) {
-      if (rank == 0) printf("Evaluating %i polynomials with %i threads using %s.\n", numPolynomials, numProcs, "Round Robin");
-      runDistributed(rank, numProcs, numPolynomials, roundRobin);
-    }
-    else if (!strcmp(argv[2], "-c")) {
-      if (rank == 0) printf("Evaluating %i polynomials with %i threads using %s.\n", numPolynomials, numProcs, "Chunking");
-      runDistributed(rank, numProcs, numPolynomials, chunk);
-    }
-    else {
-      if (rank == 0) printf("Evaluating %i polynomials with %i threads using %s.\n", numPolynomials, numProcs, "Sequential");
-      runSequential(rank, numPolynomials);
-    }
+  // if (argc >= 2) {
+  //   numPolynomials = atoi(argv[1]);
+  // }
+
+  // if (argc >= 3){
+  //   if (!strcmp(argv[2], "-r")) {
+  //     if (rank == 0) printf("Evaluating %i polynomials with %i threads using %s.\n", numPolynomials, numProcs, "Round Robin");
+  //     runDistributed(rank, numProcs, numPolynomials, roundRobin);
+  //   }
+  //   else if (!strcmp(argv[2], "-c")) {
+  //     if (rank == 0) printf("Evaluating %i polynomials with %i threads using %s.\n", numPolynomials, numProcs, "Chunking");
+  //     runDistributed(rank, numProcs, numPolynomials, chunk);
+  //   }
+  //   else {
+  //     if (rank == 0) printf("Evaluating %i polynomials with %i threads using %s.\n", numPolynomials, numProcs, "Sequential");
+  //     runSequential(rank, numPolynomials);
+  //   }
+  // }
+  char* functionName = "polynomial.exe";
+  switch (execution) {
+    case 0:
+    if (rank == 0) printf("Evaluating %i polynomials with exponent %f sequentially.\n", numPolynomials, variable);
+      runSequential(rank, numPolynomials, variable);
+      break;
+    case 1:
+      if (rank == 0) printf("Evaluating %i polynomials with exponent %f using %i processes.\n", numPolynomials, variable, numProcs);
+      runDistributed(rank, numProcs, numPolynomials, variable, strategy);
+      break;
+    case -1:
+      if(argc > 0) functionName = argv[0];
+      if (rank == 0) showUsage(functionName);
+      break;
+    default:
+      break;
   }
 
   MPI_Finalize();
