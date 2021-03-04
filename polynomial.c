@@ -32,21 +32,15 @@ double sequential(int coeffArr[], double x)
    return answer;
 }
 
-double chunk(int coeffArr[], double x)
+double chunk(int coeffArr[], double x, int rank, int numProcs)
 {
-   int rank;
-   int numProcs;
-   MPI_Comm_rank(MPI_COMM_WORLD, &rank);  // rank is process id
-   MPI_Comm_size(MPI_COMM_WORLD, &numProcs); // number of processes in total, from command line 
-
+   
    // SEND SIDE 
-   int destination;
 
-   //
-   int startIndex = (rank * MAX)/numProcs;
+   int startIndex = (rank * MAX)/numProcs; //divide up array into halves, thirds, fourths, etc. 
    int endIndex = ((rank + 1) * MAX)/numProcs;
  
-   //If the endIndex
+   //set endIndex to be the last element for the highest rank process 
    if(rank == (numProcs - 1))
         endIndex = MAX;
 
@@ -55,18 +49,16 @@ double chunk(int coeffArr[], double x)
    {
       localSum = localSum + power(coeffArr[i], x);
    }
-   MPI_Send(&localSum, 1, MPI_DOUBLE, rank, 1, MPI_COMM_WORLD);
+   //DEBUG printf("local sum for rank %d is %f \n", rank,localSum);
    
    // RECEIVE SIDE 
-   int receivedCode; 
    int source = 0; 
    MPI_Status status;
-   double recv;
-   double final = 0;
-   int tag;
+   double final = localSum; //so we don't have to send it if rank = 0
    if(rank == 0){
       int source; 
       double sum;
+      final = localSum;
       for (source = 1; source < numProcs; source++)
       {
          MPI_Recv(&sum, 1, MPI_DOUBLE, source, MPI_ANY_TAG, MPI_COMM_WORLD, &status);
@@ -78,7 +70,6 @@ double chunk(int coeffArr[], double x)
       int destination = 0;
       MPI_Send(&localSum, 1, MPI_DOUBLE, destination, 1, MPI_COMM_WORLD);
    }
-
    return final; 
 }
 
@@ -101,24 +92,31 @@ void initialize(int coeffArr[])
 // Driver Code
 int main(int argc, char **argv)
 {
+    
     int *coeffArr = (int *)malloc(sizeof(int) * MAX);
     
     initialize(coeffArr);
     double x = 0.99;
     
     MPI_Init (&argc, &argv);
+    int rank;
+    int numProcs;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);  // rank is process id
+    MPI_Comm_size(MPI_COMM_WORLD, &numProcs); // number of processes in total, from command line 
     
-    chunk(coeffArr, x);
 
     /* Start timer */
     double elapsed_time = - MPI_Wtime();
     
-    double value = sequential(coeffArr, x);
-    
+    //double value = sequential(coeffArr, x);
+    double value = chunk(coeffArr, x, rank, numProcs);
     /* End timer */
     elapsed_time = elapsed_time + MPI_Wtime();
-        
-    printf(" sequential value %f wall clock time %8.6f \n", value, elapsed_time);
+   
+   if(rank == 0){
+      printf(" sequential value %f wall clock time %8.6f \n", value, elapsed_time);
+   }
+    
     fflush(stdout);
     
     free(coeffArr);
