@@ -27,19 +27,21 @@ void populateMatrix(int matrix[][COLUMNS])
 
 int distributeSum(int matrix[ROWS][COLUMNS], int rank, int numProcs){
   int row;
-  int col = rank%numProcs; 
+  int col = 0; 
   int total = 0;
-  int startCol;
+  int startCol = rank + 1;
   for(row = 0; row < ROWS; row++){
-    startCol = abs((rank+numProcs-row)%numProcs);
+    startCol = startCol - 1;
+    if (startCol < 0)
+      startCol = numProcs-1;
     for(col = startCol; col < COLUMNS; col = col + numProcs)
     {
       total = total + matrix[row][col];
-      //DEBUG printf("Rank %d adding row %d column %d for running total %d \n", rank, row, col, total);
+      //printf("Rank %d adding row %d column %d for running total %d \n", rank, row, col, total);
     }
   }
   //MPI_Send(&total, 1, MPI_INT, 0, 1, MPI_COMM_WORLD);
-  //DEBUG printf("total for rank %d is %d \n", rank, total);
+  //printf("total for rank %d is %d \n", rank, total);
   return total;
 }
 
