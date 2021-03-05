@@ -180,6 +180,7 @@ double runDistributed(int rank, int numProcs, int numPolynomials, double variabl
 }
 
 void showUsage(char* arg0) {
+  printf("\n------------------------------------------------------------------\n");
   printf("Calculates the value of a polynomial with -p terms (default 50000),\n");
   printf("with coefficients of 1 and variable of -v (default .99). Exponents \n");
   printf("correspond to coefficient array indices.\n\n");
@@ -190,9 +191,28 @@ void showUsage(char* arg0) {
   printf("    The variable to be multiplied in the polynomial. Default .99.\n");
   printf("  -p, --polySize\n");
   printf("    The length of the polynomial in terms. Default 50000.\n");
-  printf("  -s, --strategy\n");
-  printf("    The strategy to use. Options are \"roundRobin\", \"chunk\",\n");
+  printf("  -S, --strategy\n");
+  printf("    The strategy to use. Options are \"round_robin\", \"chunk\",\n");
   printf("    and \"sequential\". Default sequential.\n");
+  printf("    Mutually exclusive with -r, -c, -s.\n");
+  printf("  -r, --round_robin\n");
+  printf("    Use the Round-robin distributed strategy. \n");
+  printf("    Mutually exclusive with -S, -c, -s.\n");
+  printf("  -c, --chunk\n");
+  printf("    Use the chunk distributed strategy. \n");
+  printf("    Mutually exclusive with -S, -r, -s.\n");
+  printf("  -s, --sequential\n");
+  printf("    Use the sequential distributed strategy. Default. \n");
+  printf("    Mutually exclusive with -S, -r, -s.\n");
+  printf("  -v|-d|-t|-y, --verbose|--descriptive|--terse|--terse2\n");
+  printf("    Specify verbosity, from verbose to terse. \n");
+  printf("    Default is --descriptive.\n");
+  printf("    --verbose is intended for debugging and additional logging.\n");
+  printf("    --terse produces only csv-ready lines, with maximum clock time.\n");
+  printf("    --terse2 produces only csv-ready lines, with clock times per \n");
+  printf("      processor.\n");
+  printf("    Mutually exclusive with each other.\n");
+  printf("\n------------------------------------------------------------------\n");
 }
 
 int matchExecution(char* argument, int rank, int* error) {
@@ -336,7 +356,7 @@ int main(int argc, char** argv) {
   if (error != 0) {
     if (rank == 0) showUsage(argv[0]);
     MPI_Finalize();
-    return 1;
+    return 0;
   }
   if (execution == ex_undefined) execution = ex_sequential;
   if (verbosity == v_undefined) verbosity = v_descriptive;
