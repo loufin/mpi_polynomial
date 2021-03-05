@@ -8,7 +8,7 @@ for file in results_2/sequential.csv results_2/roundRobin.csv results_2/chunk.cs
   echo "Procs,Terms,Variable,Total,Rank,Time" > $file
 done
 
-for polysize in 50000 75000 100000; do
+for polysize in 10000 20000 30000; do
   mpirun -np 1 polynomial.exe --terse --sequential -p $polysize >> results_2/sequential.csv
   for np in $(seq 1 16); do
     mpirun -np $np polynomial.exe -y --round_robin -p $polysize >> results_2/roundRobin.csv
