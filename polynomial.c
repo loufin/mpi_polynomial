@@ -6,6 +6,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <strings.h>
 
 #include <getopt.h>
 #include <mpi.h>
@@ -13,7 +14,7 @@
 #include "polynomial.h"
 
 enum executionMode { ex_undefined, ex_sequential, ex_round_robin, ex_chunk };
-enum verbosity { v_undefined=-99, v_verbose=1, v_descriptive=0, v_terse=-1 };
+enum verbosity { v_undefined=-99, v_verbose=10, v_descriptive=0, v_terse2=-10, v_terse=-20 };
 
 double sequential(int coeffArr[], int numPolynomials, double variable, int verbosity)
 {
@@ -64,12 +65,12 @@ double chunk(int coeffArr[], int numPolynomials, int rank, int numProcs, double 
   {
     localSum += evaluateTerm(coeffArr[i], i, variable);
   }
-  if (rank == 0 && verbosity >= v_verbose) printf("local sum for rank %d is %f \n", rank,localSum);
+  if (verbosity >= v_verbose) printf("local sum for rank %d is %f \n", rank,localSum);
   
   return localSum;
 }
 
-//Generates a set of coefficients for a polynomial then evaluates the polynomial sequentially.
+//Generates a set+ of coefficients for a polynomial then evaluates the polynomial sequentially.
 //Ignores all spawned processes besides that of rank 0.
 double runSequential(int rank, int numPolynomials, double variable, int verbosity) {
   if(rank == 0) {
@@ -103,6 +104,19 @@ double runSequential(int rank, int numPolynomials, double variable, int verbosit
   }
 }
 
+void aggregateDetailedTimings(int rank, int numProcs, double elapsed_time, double* buffer) {
+  MPI_Status status;
+  int i;
+  if (rank == 0) {
+    buffer[0] = elapsed_time;
+    for (i = 1; i < numProcs; i++) {
+      MPI_Recv(&buffer[i], 1, MPI_DOUBLE, i, INDIVIDUALTIMETAG, MPI_COMM_WORLD, &status);
+    }
+  } else {
+    MPI_Send(&elapsed_time, 1, MPI_DOUBLE, 0, INDIVIDUALTIMETAG, MPI_COMM_WORLD);
+  }
+}
+
 //Generates a set of coefficients for a polynomial then evaluates the polynomial using a passed multiThread Strategy
 double runDistributed(int rank, int numProcs, int numPolynomials, double variable, double(*multiThreadStrategy)(int*, int, int, int, double, int), int verbosity) 
 {
@@ -110,16 +124,18 @@ double runDistributed(int rank, int numProcs, int numPolynomials, double variabl
   //DEBUG printf("Initializing polynomials\n");
   int *coeffArr = (int *)malloc(sizeof(int) * numPolynomials);
   initialize(coeffArr, numPolynomials);
-  
+  int i;
+
   /* Start timer */
   double elapsed_time = - MPI_Wtime();
-    
+
   //Processes calculate work as local totals using round robin.
   double localTotal = multiThreadStrategy(coeffArr, numPolynomials, rank, numProcs, variable, verbosity);
 
   /* End timer */
   elapsed_time = elapsed_time + MPI_Wtime();
 
+  if (verbosity >= v_verbose) printf("Thread %i time taken: %f\n", rank, elapsed_time);
   //Aggregate results with reduce
   double localResult = 0.0;
   MPI_Reduce(&localTotal, &localResult, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD); 
@@ -129,10 +145,21 @@ double runDistributed(int rank, int numProcs, int numPolynomials, double variabl
   MPI_Reduce(&elapsed_time, &maxElapsedTime, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
   MPI_Reduce(&elapsed_time, &avgElapsedTime, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
   avgElapsedTime = avgElapsedTime/numProcs;
+
+  double* times = (double *)malloc(sizeof(double) * numProcs);
+  bzero(times, sizeof(double) * numProcs);
+  if (verbosity == v_terse2) aggregateDetailedTimings(rank, numProcs, elapsed_time, times);
+
   if (rank == 0) {
     switch(verbosity){
       case v_terse: {
-        printf("%i,%i,%f,%f,%f\n", numProcs, numPolynomials, variable, localResult, elapsed_time);
+        printf("%i,%i,%f,%f,%f\n", numProcs, numPolynomials, variable, localResult, maxElapsedTime);
+        break;
+      }
+      case v_terse2:{
+        for (i = 0; i < numProcs; i++) {
+          printf("%i,%i,%f,%f,%i,%f\n", numProcs, numPolynomials, variable, localResult, i, times[i]);
+        }
         break;
       }
       case v_verbose: {
@@ -147,6 +174,7 @@ double runDistributed(int rank, int numProcs, int numPolynomials, double variabl
     }
   }
 
+  free(times);
   free(coeffArr);
   return localTotal;
 }
@@ -219,12 +247,13 @@ int main(int argc, char** argv) {
       { "sequential",	  no_argument,        0,    's' },
       { "verbose",	    no_argument,        0,    'v' },
       { "descriptive",  no_argument,        0,    'd' },
-      { "terse",	      no_argument,        0,    't' }
+      { "terse",	      no_argument,        0,    't' },
+      { "terse2",	      no_argument,        0,    'y' }
     };
   int c;
   int optionIndex = 0;
   int error = 0;
-  while (error == 0 && (c = getopt_long(argc, argv, "hp:x:S:rcsvdt", longOpts, &optionIndex)) > -1){
+  while (error == 0 && (c = getopt_long(argc, argv, "hp:x:S:rcsvdty", longOpts, &optionIndex)) > -1){
     //if (rank == 0) printf("read parameter %i, value %s\n", c, optarg);
     switch(c){
       case 'h':
@@ -286,6 +315,13 @@ int main(int argc, char** argv) {
         break;
       case 't':
         if(verbosity == v_undefined) { verbosity = v_terse; }
+        else {
+          if (rank == 0) printf("Error: Multiple verbosity modes set\n");
+          error = 1;
+        }
+        break;
+      case 'y':
+        if(verbosity == v_undefined) { verbosity = v_terse2; }
         else {
           if (rank == 0) printf("Error: Multiple verbosity modes set\n");
           error = 1;

@@ -1,8 +1,7 @@
 /* 
-Matthew Dupont and Louis Finney 
-COSC 6060
-compile using:  mpicc buggy.c
-run using: mpirun -np 3 ./a.out
+  Matthew Dupont and Louis Finney 
+  COSC 6060
+  Assignment 2 - MPI work distribution
 */ 
 #include<mpi.h>
 #include<stdio.h>
