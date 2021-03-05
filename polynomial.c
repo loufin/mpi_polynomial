@@ -11,11 +11,38 @@
 #include <getopt.h>
 #include <mpi.h>
 
-#include "polynomial.h"
+#define VARIABLE .99
+#define COEFFICIENT 1
+#define INDIVIDUALTIMETAG 0
 
 enum executionMode { ex_undefined, ex_sequential, ex_round_robin, ex_chunk };
 enum verbosity { v_undefined=-99, v_verbose=10, v_descriptive=0, v_terse2=-10, v_terse=-20 };
 
+//The below are originally taken from the example code for this assignment, with modifications.
+double power(double x, int degree)
+{     
+  if(degree == 0)  return 1;
+  
+  if(degree == 1)  return x;
+
+  return x * power(x, degree - 1);
+}
+
+double evaluateTerm(int coefficient, int degree, double x)
+{
+  return coefficient * power(x, degree);
+}
+
+void initialize(int coeffArr[], int maxDegree)
+{
+  int i;
+  for( i = 0; i < maxDegree; i++)
+  {
+    coeffArr[i] = COEFFICIENT;
+  }
+}
+
+//Evaluates the provided coefficient array in a single evaluation, e.g. one process calculates for all of 1..10;
 double sequential(int coeffArr[], int numPolynomials, double variable, int verbosity)
 {
   int i;
@@ -29,8 +56,9 @@ double sequential(int coeffArr[], int numPolynomials, double variable, int verbo
   }
   return answer;
 }
+//End code originating from assignment
 
-//Evaluates the provided coefficient array in a round-robin fashin, i.e. 1,4,7,10; 2,5,8; 3,6,9;
+//Evaluates the provided coefficient array in a distributed, round-robin fashin, e.g. 1,4,7,10; 2,5,8; 3,6,9;
 double roundRobin(int coeffArr[], int numPolynomials, int rank, int numProcs, double variable, int verbosity) {
   double localTotal = 0.0;
   int i;
@@ -47,7 +75,7 @@ double roundRobin(int coeffArr[], int numPolynomials, int rank, int numProcs, do
 }
 
 
-//Chunks the provided coefficient array in contiguous pieces, i.e. 1,2,3,4; 5,6,7; 8,9,10;
+//Chunks the provided coefficient array in distributed contiguous pieces, e.g. 1,2,3,4; 5,6,7; 8,9,10;
 double chunk(int coeffArr[], int numPolynomials, int rank, int numProcs, double variable, int verbosity)
 {
   int startIndex = (rank * numPolynomials)/numProcs; //divide up array into halves, thirds, fourths, etc. 
@@ -70,12 +98,11 @@ double chunk(int coeffArr[], int numPolynomials, int rank, int numProcs, double 
   return localSum;
 }
 
-//Generates a set+ of coefficients for a polynomial then evaluates the polynomial sequentially.
+//Generates a set of coefficients for a polynomial then evaluates the polynomial sequentially.
 //Ignores all spawned processes besides that of rank 0.
 double runSequential(int rank, int numPolynomials, double variable, int verbosity) {
   if(rank == 0) {
     //Each process generates the full set of coefficients.
-    //DEBUG printf("Initializing polynomials\n");
     int *coeffArr = (int *)malloc(sizeof(int) * numPolynomials);
     initialize(coeffArr, numPolynomials);
     
@@ -86,8 +113,14 @@ double runSequential(int rank, int numPolynomials, double variable, int verbosit
 
     /* End timer */
     elapsed_time = elapsed_time + MPI_Wtime();
+
+    //Format output
     if (rank == 0) {
       switch(verbosity) {
+        case v_terse2: {
+          printf("%i,%i,%f,%f,%i,%f\n", 1, numPolynomials, variable, localTotal, 0, elapsed_time);
+          break;
+        }
         case v_terse: {
           printf("%i,%i,%f,%f,%f\n", 1, numPolynomials, variable, localTotal, elapsed_time);
           break;
@@ -97,13 +130,13 @@ double runSequential(int rank, int numPolynomials, double variable, int verbosit
           break;
         }
       }
-  }  
-
+    }  
     free(coeffArr);
     return localTotal;
   }
 }
 
+//Populates the provided buffer with timings from each proc, with index = procnum.
 void aggregateDetailedTimings(int rank, int numProcs, double elapsed_time, double* buffer) {
   MPI_Status status;
   int i;
@@ -121,7 +154,6 @@ void aggregateDetailedTimings(int rank, int numProcs, double elapsed_time, doubl
 double runDistributed(int rank, int numProcs, int numPolynomials, double variable, double(*multiThreadStrategy)(int*, int, int, int, double, int), int verbosity) 
 {
   //Each process generates the full set of coefficients.
-  //DEBUG printf("Initializing polynomials\n");
   int *coeffArr = (int *)malloc(sizeof(int) * numPolynomials);
   initialize(coeffArr, numPolynomials);
   int i;
@@ -129,7 +161,6 @@ double runDistributed(int rank, int numProcs, int numPolynomials, double variabl
   /* Start timer */
   double elapsed_time = - MPI_Wtime();
 
-  //Processes calculate work as local totals using round robin.
   double localTotal = multiThreadStrategy(coeffArr, numPolynomials, rank, numProcs, variable, verbosity);
 
   /* End timer */
@@ -148,7 +179,10 @@ double runDistributed(int rank, int numProcs, int numPolynomials, double variabl
 
   double* times = (double *)malloc(sizeof(double) * numProcs);
   bzero(times, sizeof(double) * numProcs);
-  if (verbosity == v_terse2) aggregateDetailedTimings(rank, numProcs, elapsed_time, times);
+
+  if (verbosity == v_terse2) { 
+    aggregateDetailedTimings(rank, numProcs, elapsed_time, times); 
+  }
 
   if (rank == 0) {
     switch(verbosity){
@@ -156,7 +190,7 @@ double runDistributed(int rank, int numProcs, int numPolynomials, double variabl
         printf("%i,%i,%f,%f,%f\n", numProcs, numPolynomials, variable, localResult, maxElapsedTime);
         break;
       }
-      case v_terse2:{
+      case v_terse2: {
         for (i = 0; i < numProcs; i++) {
           printf("%i,%i,%f,%f,%i,%f\n", numProcs, numPolynomials, variable, localResult, i, times[i]);
         }
@@ -215,6 +249,8 @@ void showUsage(char* arg0) {
   printf("\n------------------------------------------------------------------\n");
 }
 
+// Validates the parameter passed to -S matches allowed names. 
+// Sets error flag if it fails.
 int matchExecution(char* argument, int rank, int* error) {
   int execution;
   if(!strcmp(argument, "round_robin")){
@@ -248,8 +284,6 @@ int main(int argc, char** argv) {
   double variable = .99;
   int execution = ex_undefined;
   int verbosity = v_undefined;
-  void* strategy = roundRobin;
-
 
   static struct option longOpts[] = 
     {
@@ -270,12 +304,14 @@ int main(int argc, char** argv) {
       { "terse",	      no_argument,        0,    't' },
       { "terse2",	      no_argument,        0,    'y' }
     };
+
   int c;
   int optionIndex = 0;
   int error = 0;
+
   while (error == 0 && (c = getopt_long(argc, argv, "hp:x:S:rcsvdty", longOpts, &optionIndex)) > -1){
-    //if (rank == 0) printf("read parameter %i, value %s\n", c, optarg);
     switch(c){
+      //Usage
       case 'h':
         error = 1;
         break;
@@ -347,6 +383,8 @@ int main(int argc, char** argv) {
           error = 1;
         }
         break;
+
+      //Fallthrough
       default:
         error = 1;
         break;
@@ -358,9 +396,10 @@ int main(int argc, char** argv) {
     MPI_Finalize();
     return 0;
   }
+
+  //Specify default execution parameters.
   if (execution == ex_undefined) execution = ex_sequential;
   if (verbosity == v_undefined) verbosity = v_descriptive;
-
 
   switch (execution) {
     case ex_sequential:
